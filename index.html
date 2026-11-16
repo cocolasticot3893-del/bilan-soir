@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b0f17" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="./manifest.json" />
+  <title>Bilan Vespéral</title>
+  <style>
+    :root { --bg:#0b0f17; --card:#131a26; --border:#1f2937; --text:#f1f5f9; --muted:#94a3b8; --sport:#10b981; --work:#38bdf8; --other:#f59e0b; --danger:#ef4444; }
+    * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    body { margin:0; padding:14px 14px 96px 14px; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; line-height:1.35; }
+    header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:8px; }
+    h1 { font-size:1.1rem; margin:0; font-weight:700; }
+    .date-bar { display:flex; gap:6px; align-items:center; }
+    input[type="date"], input[type="text"], input[type="password"] { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:0.85rem; }
+    .btn-mini { background:var(--card); color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:0.78rem; font-weight:600; cursor:pointer; }
+    .btn-mini.active { color:var(--text); border-color:var(--work); }
+    .section { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; margin-bottom:14px; }
+    .section-title { font-size:0.76rem; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; }
+    .dot-wrap { display:flex; align-items:center; gap:6px; }
+    .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+    .item { margin-bottom:16px; }
+    .item:last-child { margin-bottom:0; }
+    .item-header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
+    .item-label { font-size:0.9rem; font-weight:600; }
+    .item-val { font-size:0.98rem; font-weight:700; font-variant-numeric:tabular-nums; }
+    .anchor { font-size:0.76rem; color:var(--muted); margin-top:3px; min-height:1.1em; }
+    input[type="range"] { width:100%; height:28px; background:transparent; -webkit-appearance:none; margin:0; }
+    input[type="range"]::-webkit-slider-runnable-track { height:6px; background:#243044; border-radius:4px; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; height:22px; width:22px; border-radius:50%; background:var(--text); margin-top:-8px; box-shadow:0 2px 6px rgba(0,0,0,0.5); }
+    .sport input[type="range"]::-webkit-slider-thumb { background:var(--sport); }
+    .work input[type="range"]::-webkit-slider-thumb { background:var(--work); }
+    .other input[type="range"]::-webkit-slider-thumb { background:var(--other); }
+    .seg-group, .tag-group { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+    .seg-btn, .tag-btn { flex:1; min-width:72px; padding:10px 8px; border-radius:10px; border:1px solid var(--border); background:#0e141f; color:var(--muted); font-size:0.8rem; font-weight:600; text-align:center; cursor:pointer; }
+    .seg-btn.selected { background:rgba(245,158,11,0.16); border-color:var(--other); color:var(--text); }
+    .tag-btn.selected { background:rgba(56,189,248,0.16); border-color:var(--work); color:var(--text); }
+    .tag-btn.warn.selected { background:rgba(239,68,68,0.18); border-color:var(--danger); color:#fca5a5; }
+    .submit-bar { position:fixed; bottom:0; left:0; right:0; padding:12px 14px; background:rgba(11,15,23,0.94); backdrop-filter:blur(8px); border-top:1px solid var(--border); display:flex; gap:10px; }
+    .btn-submit { flex:1; padding:14px; border:none; border-radius:12px; background:linear-gradient(135deg,#10b981,#059669); color:#04130d; font-size:1rem; font-weight:800; cursor:pointer; }
+    .status-toast { position:fixed; top:14px; left:50%; transform:translateX(-50%); padding:10px 16px; border-radius:10px; font-size:0.84rem; font-weight:600; z-index:99; display:none; box-shadow:0 8px 20px rgba(0,0,0,0.6); }
+    #cfgPanel { display:none; margin-bottom:12px; }
+    .cfg-grid { display:grid; grid-template-columns:1fr; gap:8px; margin-top:8px; }
+    .history-table { width:100%; border-collapse:collapse; font-size:0.74rem; color:var(--muted); }
+    .history-table td, .history-table th { padding:6px 4px; border-bottom:1px solid var(--border); text-align:center; }
+    .history-table td:first-child { text-align:left; color:var(--text); font-weight:600; }
+  </style>
+</head>
+<body>
+  <div id="toast" class="status-toast"></div>
+  <header>
+    <h1>Bilan Vespéral</h1>
+    <div class="date-bar">
+      <button type="button" class="btn-mini" id="btnYesterday">Hier</button>
+      <input type="date" id="logDate" />
+      <button type="button" class="btn-mini" id="btnToggleCfg">Sync</button>
+    </div>
+  </header>
+  <div id="cfgPanel" class="section">
+    <div class="item-header">
+      <span class="item-label">Sync Intervals.icu (Optionnel)</span>
+      <button type="button" class="btn-mini active" id="btnSaveCfg">Enregistrer</button>
+    </div>
+    <div class="cfg-grid">
+      <input type="text" id="icuAthleteId" placeholder="ID Athlète Intervals.icu (ex: i123456)" />
+      <input type="password" id="icuApiKey" placeholder="Clé API Intervals.icu" />
+    </div>
+  </div>
+  <div class="section sport">
+    <div class="section-title"><span class="dot-wrap"><span class="dot" style="background:var(--sport)"></span>1. Sport (Charge & Musculaire)</span></div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Effort global (sRPE)</span><span class="item-val" id="val_sport_srpe">0 / 10</span></div>
+      <input type="range" id="sport_srpe" min="0" max="10" step="1" value="0" />
+      <div class="anchor" id="anc_sport_srpe">Repos complet</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Contrainte musculaire (SRSS-MS)</span><span class="item-val" id="val_sport_muscular_stress">0 / 6</span></div>
+      <input type="range" id="sport_muscular_stress" min="0" max="6" step="1" value="0" />
+      <div class="anchor" id="anc_sport_muscular_stress">Fibres fluides, aucune raideur</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Capacité physique résiduelle (PPC)</span><span class="item-val" id="val_sport_physical_cap">4 / 6</span></div>
+      <input type="range" id="sport_physical_cap" min="0" max="6" step="1" value="4" />
+      <div class="anchor" id="anc_sport_physical_cap">Bonne disponibilité énergétique</div>
+    </div>
+  </div>
+  <div class="section work">
+    <div class="section-title"><span class="dot-wrap"><span class="dot" style="background:var(--work)"></span>2. Travail (Poker, Quant & Code)</span></div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Volume cognitif haute intensité</span><span class="item-val" id="val_work_cognitive_hours">0.0 h</span></div>
+      <input type="range" id="work_cognitive_hours" min="0" max="12" step="0.5" value="0" />
+      <div class="anchor" id="anc_work_cognitive_hours">Charge cumulative : 0.0 UA</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Exigence mentale pure (NASA-TLX)</span><span class="item-val" id="val_work_mental_demand">1 / 10</span></div>
+      <input type="range" id="work_mental_demand" min="1" max="10" step="1" value="1" />
+      <div class="anchor" id="anc_work_mental_demand">Exécution routinière</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Frustration & Tilt (NASA-TLX)</span><span class="item-val" id="val_work_frustration_tilt">1 / 10</span></div>
+      <input type="range" id="work_frustration_tilt" min="1" max="10" step="1" value="1" />
+      <div class="anchor" id="anc_work_frustration_tilt">Contrôle exécutif total (A-Game)</div>
+    </div>
+  </div>
+  <div class="section other">
+    <div class="section-title"><span class="dot-wrap"><span class="dot" style="background:var(--other)"></span>3. Autre (Allostasie & Récup)</span></div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Stress général extra-sportif</span><span class="item-val" id="val_other_overall_stress">1 / 6</span></div>
+      <input type="range" id="other_overall_stress" min="0" max="6" step="1" value="1" />
+      <div class="anchor" id="anc_other_overall_stress">Friction externe minimale</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Équilibre émotionnel (SRSS-EB)</span><span class="item-val" id="val_other_emotional_balance">4 / 6</span></div>
+      <input type="range" id="other_emotional_balance" min="0" max="6" step="1" value="4" />
+      <div class="anchor" id="anc_other_emotional_balance">Calme et recul préservés</div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Nutrition & Protocole récup</span><span class="item-val" id="val_other_fueling_recovery">2 / 3</span></div>
+      <div class="seg-group" id="fuelingGroup">
+        <button type="button" class="seg-btn" data-val="1">1 · Déficit</button>
+        <button type="button" class="seg-btn selected" data-val="2">2 · Standard</button>
+        <button type="button" class="seg-btn" data-val="3">3 · Optimal</button>
+      </div>
+    </div>
+    <div class="item">
+      <div class="item-header"><span class="item-label">Perturbateurs pré-sommeil</span><span class="item-val" id="val_sleep_tags">Aucun</span></div>
+      <div class="tag-group" id="sleepTagsGroup">
+        <button type="button" class="tag-btn selected" data-tag="none">Aucun</button>
+        <button type="button" class="tag-btn warn" data-tag="caffeine">Caféine &lt;10h</button>
+        <button type="button" class="tag-btn warn" data-tag="late_meal">Repas tardif</button>
+        <button type="button" class="tag-btn warn" data-tag="late_screen">Écrans tardifs</button>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">
+      <span>Historique Local (Pixel)</span>
+      <div style="display:flex; gap:6px;">
+        <button type="button" class="btn-mini" id="btnCopyJson">Copier JSONL</button>
+        <button type="button" class="btn-mini" id="btnExportCsv">Export CSV</button>
+      </div>
+    </div>
+    <table class="history-table">
+      <thead><tr><th>Date</th><th>sRPE</th><th>Musc</th><th>Cap</th><th>Cog(h)</th><th>Tilt</th><th>Fuel</th></tr></thead>
+      <tbody id="historyBody"><tr><td colspan="7">Aucune donnée</td></tr></tbody>
+    </table>
+  </div>
+  <div class="submit-bar">
+    <button type="button" class="btn-submit" id="btnSubmit">Enregistrer le bilan</button>
+  </div>
+  <script>
+    const STORAGE_KEY = 'evening_telemetry_records_v1';
+    const ANCHORS = {
+      sport_srpe: ["Repos complet","Très léger (récup active)","Facile (< SV1)","Endurance fondamentale","Modéré (haut Z2)","Tempo / Sweet Spot","Soutenu (approche SV2)","Seuil / Intervalles durs","Très dur (VO2max)","Quasi-maximal","Maximal / Épuisement"],
+      sport_muscular_stress: ["Fibres fluides, aucune raideur","Tensions très légères","Raideur légère post-effort","Raideur modérée localisée","Lourdeur musculaire marquée","Courbatures intenses (kBox / D+)","Dommages musculaires sévères"],
+      sport_physical_cap: ["Réservoir vide, épuisement","Fatigue énergétique nette","Disponibilité réduite","État fonctionnel standard","Bonne disponibilité énergétique","Très frais et disponible","Plénitude physique totale"],
+      work_mental_demand: {1:"Exécution routinière",3:"Attention modérée",5:"Calcul et analyse soutenus",7:"Haute densité décisionnelle",9:"Saturation cognitive proche",10:"Saturation cognitive maximale"},
+      work_frustration_tilt: {1:"Contrôle exécutif total (A-Game)",3:"Micro-agacement sans impact",5:"Friction modérée (variance/bug)",7:"Tension émotionnelle élevée",9:"Perte de lucidité / pré-tilt",10:"Tilt avéré"},
+      other_overall_stress: ["Journée sereine, zéro friction","Friction externe minimale","Sollicitations légères","Charge allostatique modérée","Imprévus ou contraintes marquées","Forte pression extra-sportive","Surcharge logistique ou sociale"],
+      other_emotional_balance: ["Irritabilité marquée","Humeur basse / réactivité","Légèrement émoussé","Neutre","Calme et recul préservés","Très bonne stabilité affective","Équilibre et sérénité totaux"]
+    };
+    function getAnchorText(id, val) {
+      const ref = ANCHORS[id];
+      if (Array.isArray(ref)) return ref[val] || "";
+      const keys = Object.keys(ref).map(Number).sort((a,b)=>a-b);
+      let chosen = keys[0];
+      for (const k of keys) { if (val >= k) chosen = k; }
+      return ref[chosen];
+    }
+    function formatLocalDate(offset = 0) {
+      const d = new Date(); d.setDate(d.getDate() + offset);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+    const logDateInput = document.getElementById('logDate');
+    logDateInput.value = formatLocalDate(0);
+    document.getElementById('btnYesterday').addEventListener('click', () => { logDateInput.value = formatLocalDate(-1); loadEntryForDate(logDateInput.value); });
+    logDateInput.addEventListener('change', () => loadEntryForDate(logDateInput.value));
+    const icuAthleteId = document.getElementById('icuAthleteId');
+    const icuApiKey = document.getElementById('icuApiKey');
+    icuAthleteId.value = localStorage.getItem('icu_athlete_id') || '';
+    icuApiKey.value = localStorage.getItem('icu_api_key') || '';
+    document.getElementById('btnToggleCfg').addEventListener('click', () => {
+      const p = document.getElementById('cfgPanel');
+      p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    });
+    document.getElementById('btnSaveCfg').addEventListener('click', () => {
+      localStorage.setItem('icu_athlete_id', icuAthleteId.value.trim());
+      localStorage.setItem('icu_api_key', icuApiKey.value.trim());
+      document.getElementById('cfgPanel').style.display = 'none';
+      showToast('Paramètres Intervals.icu sauvegardés', '#10b981');
+    });
+    const sliders = ['sport_srpe','sport_muscular_stress','sport_physical_cap','work_cognitive_hours','work_mental_demand','work_frustration_tilt','other_overall_stress','other_emotional_balance'];
+    function updateCognitiveSummary() {
+      const h = parseFloat(document.getElementById('work_cognitive_hours').value);
+      const d = parseInt(document.getElementById('work_mental_demand').value, 10);
+      document.getElementById('anc_work_cognitive_hours').textContent = `Charge cumulative : ${(h * d).toFixed(1)} UA`;
+    }
+    sliders.forEach((id) => {
+      const el = document.getElementById(id);
+      const valEl = document.getElementById(`val_${id}`);
+      el.addEventListener('input', () => {
+        if (id === 'work_cognitive_hours') {
+          valEl.textContent = `${parseFloat(el.value).toFixed(1)} h`;
+          updateCognitiveSummary();
+        } else {
+          valEl.textContent = `${el.value} / ${el.max}`;
+          document.getElementById(`anc_${id}`).textContent = getAnchorText(id, parseInt(el.value, 10));
+          if (id === 'work_mental_demand') updateCognitiveSummary();
+        }
+      });
+    });
+    let fuelingVal = 2;
+    function setFuelingUI(val) {
+      fuelingVal = val;
+      document.querySelectorAll('#fuelingGroup .seg-btn').forEach((b) => b.classList.toggle('selected', parseInt(b.dataset.val, 10) === val));
+      document.getElementById('val_other_fueling_recovery').textContent = `${val} / 3`;
+    }
+    document.querySelectorAll('#fuelingGroup .seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => setFuelingUI(parseInt(btn.dataset.val, 10)));
+    });
+    let sleepTags = new Set(['none']);
+    const tagLabels = { none:'Aucun', caffeine:'Caféine', late_meal:'Repas tardif', late_screen:'Écrans' };
+    function renderTags() {
+      document.querySelectorAll('#sleepTagsGroup .tag-btn').forEach((btn) => btn.classList.toggle('selected', sleepTags.has(btn.dataset.tag)));
+      document.getElementById('val_sleep_tags').textContent = Array.from(sleepTags).map((t) => tagLabels[t]).join(', ');
+    }
+    document.querySelectorAll('#sleepTagsGroup .tag-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tag = btn.dataset.tag;
+        if (tag === 'none') { sleepTags = new Set(['none']); }
+        else {
+          sleepTags.delete('none');
+          if (sleepTags.has(tag)) sleepTags.delete(tag); else sleepTags.add(tag);
+          if (sleepTags.size === 0) sleepTags.add('none');
+        }
+        renderTags();
+      });
+    });
+    function getRecordsMap() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+    }
+    function saveRecordLocal(entry) {
+      const map = getRecordsMap();
+      map[entry.date] = entry;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    }
+    function loadEntryForDate(dateStr) {
+      const entry = getRecordsMap()[dateStr];
+      if (!entry) return;
+      sliders.forEach((id) => {
+        if (entry[id] !== undefined) {
+          const el = document.getElementById(id);
+          el.value = entry[id];
+          el.dispatchEvent(new Event('input'));
+        }
+      });
+      if (entry.other_fueling_recovery) setFuelingUI(entry.other_fueling_recovery);
+      if (Array.isArray(entry.sleep_hygiene_tags)) { sleepTags = new Set(entry.sleep_hygiene_tags); renderTags(); }
+    }
+    function renderHistory() {
+      const map = getRecordsMap();
+      const rows = Object.values(map).sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7);
+      const tbody = document.getElementById('historyBody');
+      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7">Aucune donnée enregistrée</td></tr>'; return; }
+      tbody.innerHTML = rows.map((r) => `<tr><td>${r.date.slice(5)}</td><td>${r.sport_srpe}</td><td>${r.sport_muscular_stress}</td><td>${r.sport_physical_cap}</td><td>${r.work_cognitive_hours}</td><td>${r.work_frustration_tilt}</td><td>${r.other_fueling_recovery}</td></tr>`).join('');
+    }
+    async function syncIntervalsIcu(entry) {
+      const aid = localStorage.getItem('icu_athlete_id');
+      const key = localStorage.getItem('icu_api_key');
+      if (!aid || !key) return false;
+      const soreness = Math.max(1, Math.min(4, Math.ceil((entry.sport_muscular_stress + 1) / 1.75)));
+      const stress = Math.max(1, Math.min(4, Math.ceil((entry.other_overall_stress + 1) / 1.75)));
+      const fatigue = Math.max(1, Math.min(4, Math.ceil((7 - entry.sport_physical_cap) / 1.75)));
+      const body = {
+        soreness, stress, fatigue,
+        comments: `sRPE:${entry.sport_srpe} | Cap:${entry.sport_physical_cap}/6 | Cog:${entry.work_cognitive_hours}h(D:${entry.work_mental_demand},Tilt:${entry.work_frustration_tilt}) | Fuel:${entry.other_fueling_recovery}/3 | Sleep:[${entry.sleep_hygiene_tags.join(',')}]`
+      };
+      const res = await fetch(`https://intervals.icu/api/v1/athlete/${aid}/wellness/${entry.date}`, {
+        method: 'PUT',
+        headers: { 'Authorization': 'Basic ' + btoa(`API_KEY:${key}`), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`ICU HTTP ${res.status}`);
+      return true;
+    }
+    function showToast(msg, color = '#10b981') {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.style.background = color;
+      t.style.color = color === '#ef4444' ? '#fff' : '#04130d';
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+    document.getElementById('btnSubmit').addEventListener('click', async () => {
+      const tagsArr = Array.from(sleepTags);
+      const entry = {
+        date: logDateInput.value,
+        submitted_at: new Date().toISOString(),
+        sport_srpe: parseInt(document.getElementById('sport_srpe').value, 10),
+        sport_muscular_stress: parseInt(document.getElementById('sport_muscular_stress').value, 10),
+        sport_physical_cap: parseInt(document.getElementById('sport_physical_cap').value, 10),
+        work_cognitive_hours: parseFloat(document.getElementById('work_cognitive_hours').value),
+        work_mental_demand: parseInt(document.getElementById('work_mental_demand').value, 10),
+        work_frustration_tilt: parseInt(document.getElementById('work_frustration_tilt').value, 10),
+        other_overall_stress: parseInt(document.getElementById('other_overall_stress').value, 10),
+        other_emotional_balance: parseInt(document.getElementById('other_emotional_balance').value, 10),
+        other_fueling_recovery: fuelingVal,
+        other_sleep_hygiene: tagsArr.includes('none') ? 1 : 0,
+        sleep_hygiene_tags: tagsArr
+      };
+      saveRecordLocal(entry);
+      renderHistory();
+      try {
+        const synced = await syncIntervalsIcu(entry);
+        showToast(synced ? `Sauvegardé + Sync Intervals.icu (${entry.date})` : `Sauvegardé sur Pixel (${entry.date})`, '#10b981');
+      } catch {
+        showToast(`Sauvegardé en local (Sync ICU hors ligne)`, '#f59e0b');
+      }
+    });
+    document.getElementById('btnCopyJson').addEventListener('click', async () => {
+      const rows = Object.values(getRecordsMap()).sort((a,b) => a.date.localeCompare(b.date));
+      const jsonl = rows.map((r) => JSON.stringify(r)).join('\n');
+      await navigator.clipboard.writeText(jsonl);
+      showToast(`${rows.length} entrées copiées en JSONL`, '#38bdf8');
+    });
+    document.getElementById('btnExportCsv').addEventListener('click', () => {
+      const rows = Object.values(getRecordsMap()).sort((a,b) => a.date.localeCompare(b.date));
+      if (!rows.length) return;
+      const cols = ['date','sport_srpe','sport_muscular_stress','sport_physical_cap','work_cognitive_hours','work_mental_demand','work_frustration_tilt','other_overall_stress','other_emotional_balance','other_fueling_recovery','other_sleep_hygiene'];
+      const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => r[c]).join(','))].join('\n');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = `bilan_soir_${formatLocalDate(0)}.csv`;
+      a.click();
+    });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+    renderHistory();
+    loadEntryForDate(logDateInput.value);
+  </script>
+</body>
+</html>
