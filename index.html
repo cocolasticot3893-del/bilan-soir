@@ -144,6 +144,7 @@
     <div class="section-title">
       <span>Historique Local (Pixel)</span>
       <div style="display:flex; gap:6px;">
+        <button type="button" class="btn-mini" id="btnSyncAllIcu">Tout sync ICU</button>
         <button type="button" class="btn-mini" id="btnCopyJson">Copier JSONL</button>
         <button type="button" class="btn-mini" id="btnExportCsv">Export CSV</button>
       </div>
@@ -432,6 +433,38 @@
       } catch (err) {
         showToast(`Erreur Sync ICU (${err.message || err})`, '#ef4444');
       }
+    });
+    document.getElementById('btnSyncAllIcu').addEventListener('click', async (e) => {
+      const aid = (localStorage.getItem('icu_athlete_id') || '').trim();
+      const key = (localStorage.getItem('icu_api_key') || '').trim();
+      if (!aid || !key) {
+        showToast('Identifiants ICU manquants', '#ef4444');
+        return;
+      }
+      const rows = Object.values(getRecordsMap()).sort((a, b) => a.date.localeCompare(b.date));
+      if (rows.length === 0) {
+        showToast('Aucun bilan local à synchroniser', '#f59e0b');
+        return;
+      }
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      let okCount = 0;
+      try {
+        for (let i = 0; i < rows.length; i++) {
+          try {
+            if (await syncIntervalsIcu(rows[i])) okCount++;
+          } catch (_) {
+            // Poursuit le lot même si une entrée échoue
+          }
+          if (i < rows.length - 1) {
+            await new Promise((r) => setTimeout(r, 250));
+          }
+        }
+      } finally {
+        btn.disabled = false;
+      }
+      const color = okCount === rows.length ? '#10b981' : (okCount > 0 ? '#f59e0b' : '#ef4444');
+      showToast(`${okCount}/${rows.length} bilans synchronisés sur Intervals.icu`, color);
     });
     document.getElementById('btnCopyJson').addEventListener('click', async () => {
       const rows = Object.values(getRecordsMap()).sort((a,b) => a.date.localeCompare(b.date));

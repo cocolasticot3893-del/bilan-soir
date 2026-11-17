@@ -10,6 +10,7 @@ import inspect
 import json
 import pathlib
 import sys
+import unicodedata
 from typing import Any
 
 import duckdb
@@ -32,6 +33,16 @@ EVENING_CODES: list[str] = [
     "EmotionalBalance",
     "FuelingRecov",
     "SleepHygiene",
+]
+
+# (nom_colonne, libellé_custom_item, code_fallback, type_polars)
+MORNING_CUSTOM_SPECS: list[tuple[str, str, str, pl.DataType]] = [
+    ("handgrip_left", "Handgrip Gauche", "HandgripGauche", pl.Float64),
+    ("handgrip_right", "Handgrip Droit", "HandgripDroit", pl.Float64),
+    ("pvt_median", "PVT Médian", "PvtMedian", pl.Float64),
+    ("pvt_lapses", "PVT Lapses", "PvtLapses", pl.Int64),
+    ("stroop_ies", "Stroop IES", "StroopIES", pl.Float64),
+    ("cognitive_z", "Cognitive Z", "CognitiveZ", pl.Float64),
 ]
 
 
@@ -74,6 +85,60 @@ def _to_int(val: Any) -> int | None:
         return None
 
 
+def _normalize_label(text: str) -> str:
+    """Normalise un libellé (sans accents, minuscules, espaces condensés)."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(no_accents.lower().split())
+
+
+def _resolve_morning_custom_codes(
+    session: requests.Session,
+    athlete_id: str,
+) -> dict[str, str]:
+    """Résout dynamiquement les clés JSON custom-item vers les 6 colonnes matinales."""
+    resolved: dict[str, str] = {
+        col: fallback for col, _, fallback, _ in MORNING_CUSTOM_SPECS
+    }
+    target_by_norm = {
+        _normalize_label(label): col for col, label, _, _ in MORNING_CUSTOM_SPECS
+    }
+
+    url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/custom-item"
+    try:
+        resp = session.get(url, timeout=30)
+        resp.raise_for_status()
+        items = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        print(f"      [WARN] Impossible de lire custom-item ({exc}) -> fallback codes par défaut.")
+        return resolved
+
+    if not isinstance(items, list):
+        return resolved
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        raw_name = item.get("name") or content.get("name")
+        raw_code = content.get("code") or item.get("code")
+        if not raw_name or not raw_code:
+            continue
+        norm_name = _normalize_label(str(raw_name))
+        if norm_name in target_by_norm:
+            resolved[target_by_norm[norm_name]] = str(raw_code)
+
+    return resolved
+
+
+def _extract_wellness_custom(w: dict[str, Any], code: str) -> Any:
+    """Extrait un champ custom depuis la racine wellness ou son sous-dict custom."""
+    val = w.get(code)
+    if val is None and isinstance(w.get("custom"), dict):
+        val = w["custom"].get(code)
+    return val
+
+
 def main() -> int:
     athlete_id, api_key = load_credentials()
     session = requests.Session()
@@ -95,7 +160,10 @@ def main() -> int:
     wellness_url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/wellness?oldest={oldest_str}&newest={newest_str}"
     activities_url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/activities?oldest={oldest_str}&newest={newest_str}"
 
-    print(f"[1/4] Téléchargement Wellness & Activities depuis Intervals.icu...")
+    print("[1/4] Téléchargement Custom Items, Wellness & Activities depuis Intervals.icu...")
+    morning_codes = _resolve_morning_custom_codes(session, athlete_id)
+    print(f"      -> Clés matinales résolues : {morning_codes}")
+
     w_resp = session.get(wellness_url, timeout=30)
     w_resp.raise_for_status()
     wellness_raw: list[dict[str, Any]] = w_resp.json()
@@ -172,10 +240,10 @@ def main() -> int:
             "rampRate": _to_float(w.get("rampRate")),
         }
         for code in EVENING_CODES:
-            val = w.get(code)
-            if val is None and isinstance(w.get("custom"), dict):
-                val = w["custom"].get(code)
-            row[code] = _to_float(val)
+            row[code] = _to_float(_extract_wellness_custom(w, code))
+        for col, _, _, dtype in MORNING_CUSTOM_SPECS:
+            raw_val = _extract_wellness_custom(w, morning_codes[col])
+            row[col] = _to_int(raw_val) if dtype == pl.Int64 else _to_float(raw_val)
         well_rows.append(row)
 
     well_schema: dict[str, pl.DataType] = {
@@ -190,6 +258,7 @@ def main() -> int:
         "atl": pl.Float64,
         "rampRate": pl.Float64,
         **{code: pl.Float64 for code in EVENING_CODES},
+        **{col: dtype for col, _, _, dtype in MORNING_CUSTOM_SPECS},
     }
 
     if well_rows:
@@ -206,10 +275,31 @@ def main() -> int:
             pl.col("daily_duration_secs").fill_null(0),
             pl.col("activity_count").fill_null(0),
             (pl.col("sleepSecs").cast(pl.Float64) / 3600.0).round(2).alias("sleep_hours"),
+            pl.when(
+                pl.col("handgrip_left").is_not_null()
+                & pl.col("handgrip_right").is_not_null()
+            )
+            .then((pl.col("handgrip_left") + pl.col("handgrip_right")) / 2.0)
+            .otherwise(pl.coalesce(pl.col("handgrip_left"), pl.col("handgrip_right")))
+            .alias("handgrip_mean"),
+            pl.when(
+                pl.col("handgrip_left").is_not_null()
+                & pl.col("handgrip_right").is_not_null()
+                & (pl.max_horizontal("handgrip_left", "handgrip_right") > 0)
+            )
+            .then(
+                (pl.col("handgrip_left") - pl.col("handgrip_right")).abs()
+                / pl.max_horizontal("handgrip_left", "handgrip_right")
+                * 100.0
+            )
+            .otherwise(None)
+            .alias("handgrip_asym_pct"),
         )
     )
 
-    print("[3/4] Calcul des métriques glissantes 28j (HRV / RHR / CogLoad Z-Score) et ratio sRPE/TSS...")
+    print(
+        "[3/4] Calcul des métriques glissantes 28j (HRV / RHR / CogLoad / Handgrip / PVT / Stroop Z-Score) et ratio sRPE/TSS..."
+    )
     df = df.with_columns(
         _rolling_mean(pl.col("hrv"), 28, 3).alias("hrv_mean_28d"),
         _rolling_std(pl.col("hrv"), 28, 3).alias("hrv_std_28d"),
@@ -217,6 +307,12 @@ def main() -> int:
         _rolling_std(pl.col("restingHR"), 28, 3).alias("rhr_std_28d"),
         _rolling_mean(pl.col("CogLoadUA"), 28, 2).alias("cog_load_mean_28d"),
         _rolling_std(pl.col("CogLoadUA"), 28, 2).alias("cog_load_std_28d"),
+        _rolling_mean(pl.col("handgrip_mean"), 28, 5).alias("handgrip_mean_28d"),
+        _rolling_std(pl.col("handgrip_mean"), 28, 5).alias("handgrip_std_28d"),
+        _rolling_mean(pl.col("pvt_median"), 28, 5).alias("pvt_mean_28d"),
+        _rolling_std(pl.col("pvt_median"), 28, 5).alias("pvt_std_28d"),
+        _rolling_mean(pl.col("stroop_ies"), 28, 5).alias("stroop_ies_mean_28d"),
+        _rolling_std(pl.col("stroop_ies"), 28, 5).alias("stroop_ies_std_28d"),
         pl.when((pl.col("daily_tss") > 0) & pl.col("EveningSrpe").is_not_null())
         .then(pl.col("EveningSrpe") / (pl.col("daily_tss") / 100.0))
         .otherwise(None)
@@ -238,6 +334,18 @@ def main() -> int:
         .then((pl.col("CogLoadUA") - pl.col("cog_load_mean_28d")) / pl.col("cog_load_std_28d"))
         .otherwise(None)
         .alias("cog_load_z_score_28d"),
+        pl.when((pl.col("handgrip_std_28d") > 0) & pl.col("handgrip_mean").is_not_null())
+        .then((pl.col("handgrip_mean") - pl.col("handgrip_mean_28d")) / pl.col("handgrip_std_28d"))
+        .otherwise(None)
+        .alias("handgrip_z_28d"),
+        pl.when((pl.col("pvt_std_28d") > 0) & pl.col("pvt_median").is_not_null())
+        .then((pl.col("pvt_median") - pl.col("pvt_mean_28d")) / pl.col("pvt_std_28d"))
+        .otherwise(None)
+        .alias("pvt_z_28d"),
+        pl.when((pl.col("stroop_ies_std_28d") > 0) & pl.col("stroop_ies").is_not_null())
+        .then((pl.col("stroop_ies") - pl.col("stroop_ies_mean_28d")) / pl.col("stroop_ies_std_28d"))
+        .otherwise(None)
+        .alias("stroop_ies_z_28d"),
     )
 
     print(f"[4/4] Enregistrement dans DuckDB : {DUCKDB_PATH} (table: daily_telemetry)...")
@@ -296,6 +404,26 @@ def main() -> int:
                 pl.col("PhysicalCap"),
                 pl.col("CogLoadUA"),
                 pl.col("cog_load_z_score_28d").round(2),
+            ]
+        )
+    )
+
+    print("\n--- Aperçu Matinal Neuro-Musculaire & Cognitif (10 derniers jours) ---")
+    print(
+        df.tail(10).select(
+            [
+                pl.col("date"),
+                pl.col("handgrip_left").round(1),
+                pl.col("handgrip_right").round(1),
+                pl.col("handgrip_mean").round(1),
+                pl.col("handgrip_asym_pct").round(1),
+                pl.col("handgrip_z_28d").round(2),
+                pl.col("pvt_median").round(1),
+                pl.col("pvt_lapses"),
+                pl.col("pvt_z_28d").round(2),
+                pl.col("stroop_ies").round(1),
+                pl.col("stroop_ies_z_28d").round(2),
+                pl.col("cognitive_z").round(2),
             ]
         )
     )
