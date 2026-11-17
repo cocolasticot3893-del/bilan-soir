@@ -10,6 +10,7 @@ import datetime
 import json
 import pathlib
 import sys
+import unicodedata
 from typing import Any
 
 import requests
@@ -46,11 +47,24 @@ TEST_VALUES: dict[str, int | float] = {
 }
 
 
+EVENING_CODES: set[str] = {spec["code"] for spec in EVENING_FIELDS}
+SERVER_DROP_KEYS: tuple[str, ...] = ("id", "updated", "athlete_id", "usage_count", "from_athlete", "from_id")
+TARGET_TEMPLATE_NAMES: set[str] = {"handgrip gauche", "pvt median"}
+
+
 def load_credentials() -> tuple[str, str]:
     if not CREDS_PATH.exists():
         raise FileNotFoundError(f"Credentials file not found: {CREDS_PATH}")
     data = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
     return str(data["athlete_id"]).strip(), str(data["api_key"]).strip()
+
+
+def normalize_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return without_accents.casefold().strip()
 
 
 def extract_code(item: dict[str, Any]) -> str | None:
@@ -63,46 +77,107 @@ def extract_code(item: dict[str, Any]) -> str | None:
     return None
 
 
-def build_payload(field_spec: dict[str, Any], template_item: dict[str, Any] | None) -> dict[str, Any]:
-    if template_item is not None:
-        cloned = copy.deepcopy(template_item)
-        for drop_key in ("id", "updated", "athlete_id", "usage_count", "from_athlete", "from_id"):
-            cloned.pop(drop_key, None)
-        cloned["name"] = field_spec["name"]
-        cloned["description"] = field_spec["description"]
-        cloned["type"] = "INPUT_FIELD"
-        content = copy.deepcopy(cloned.get("content")) if isinstance(cloned.get("content"), dict) else {}
-        content["code"] = field_spec["code"]
-        content["name"] = field_spec["name"]
-        content["type"] = "numeric"
+def extract_name(item: dict[str, Any]) -> str | None:
+    top_name = item.get("name")
+    if isinstance(top_name, str) and top_name.strip():
+        return top_name
+    content = item.get("content")
+    if isinstance(content, dict) and isinstance(content.get("name"), str) and content["name"].strip():
+        return content["name"]
+    return None
+
+
+def extract_units(item: dict[str, Any]) -> Any:
+    for key in ("units", "suffix"):
+        if item.get(key) is not None:
+            return item.get(key)
+    content = item.get("content")
+    if isinstance(content, dict):
+        for key in ("units", "suffix"):
+            if content.get(key) is not None:
+                return content.get(key)
+    return None
+
+
+def redact_item(item: dict[str, Any]) -> dict[str, Any]:
+    masked = copy.deepcopy(item)
+    if "athlete_id" in masked:
+        masked["athlete_id"] = "<REDACTED>"
+    if isinstance(masked.get("content"), dict) and "athlete_id" in masked["content"]:
+        masked["content"]["athlete_id"] = "<REDACTED>"
+    return masked
+
+
+def is_target_for_deletion(item: dict[str, Any]) -> bool:
+    code = extract_code(item)
+    if code in EVENING_CODES:
+        return True
+    item_id = item.get("id")
+    try:
+        numeric_id = int(item_id) if item_id is not None else None
+    except (TypeError, ValueError):
+        numeric_id = None
+    return numeric_id is not None and 1330713 <= numeric_id <= 1330723
+
+
+def find_template_item(items: list[dict[str, Any]], excluded_ids: set[Any]) -> dict[str, Any]:
+    available_summary: list[str] = []
+    for item in items:
+        if item.get("id") in excluded_ids:
+            continue
+        top_name = item.get("name")
+        content = item.get("content")
+        content_name = content.get("name") if isinstance(content, dict) else None
+        candidates = [normalize_text(top_name), normalize_text(content_name)]
+        if any(candidate in TARGET_TEMPLATE_NAMES for candidate in candidates if candidate):
+            return item
+        available_summary.append(
+            f"{extract_name(item) or '<sans nom>'} (type={item.get('type')!r}, code={extract_code(item)!r})"
+        )
+    raise RuntimeError(
+        "Aucun item modèle 'Handgrip Gauche' ou 'PVT Médian' trouvé (hors items supprimés). "
+        f"Items disponibles: {', '.join(available_summary) if available_summary else 'aucun'}"
+    )
+
+
+def build_payload(field_spec: dict[str, Any], template_item: dict[str, Any]) -> dict[str, Any]:
+    cloned = copy.deepcopy(template_item)
+    for drop_key in SERVER_DROP_KEYS:
+        cloned.pop(drop_key, None)
+
+    cloned["name"] = field_spec["name"]
+    cloned["description"] = field_spec["description"]
+
+    if "code" in template_item:
+        cloned["code"] = field_spec["code"]
+    if "units" in template_item:
+        cloned["units"] = field_spec["units"]
+    if "suffix" in template_item:
+        cloned["suffix"] = field_spec["units"]
+    if "min" in template_item:
+        cloned["min"] = 0.0
+    if "max" in template_item:
+        cloned["max"] = float(field_spec["max"])
+    if "number_format" in template_item:
+        cloned["number_format"] = field_spec["fmt"]
+
+    content = cloned.get("content")
+    if isinstance(content, dict):
+        if "name" in content:
+            content["name"] = field_spec["name"]
+        if "description" in content:
+            content["description"] = field_spec["description"]
+        if "code" in content or "code" not in template_item:
+            content["code"] = field_spec["code"]
+        if "units" in content:
+            content["units"] = field_spec["units"]
+        if "suffix" in content:
+            content["suffix"] = field_spec["units"]
         content["min"] = 0.0
         content["max"] = float(field_spec["max"])
-        content["units"] = field_spec["units"]
-        content["suffix"] = field_spec["units"]
         content["number_format"] = field_spec["fmt"]
-        cloned["content"] = content
-        return cloned
 
-    return {
-        "type": "INPUT_FIELD",
-        "visibility": "PRIVATE",
-        "name": field_spec["name"],
-        "description": field_spec["description"],
-        "content": {
-            "code": field_spec["code"],
-            "name": field_spec["name"],
-            "type": "numeric",
-            "min": 0.0,
-            "max": float(field_spec["max"]),
-            "units": field_spec["units"],
-            "suffix": field_spec["units"],
-            "number_format": field_spec["fmt"],
-            "gauge": True,
-            "text_align": "center",
-            "text_wrap": "no",
-            "processes_fit_messages": False,
-        },
-    }
+    return cloned
 
 
 def main() -> int:
@@ -118,87 +193,81 @@ def main() -> int:
     )
 
     custom_item_url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/custom-item"
-    print(f"[1/4] GET {custom_item_url}")
+    print("[1/5] GET /api/v1/athlete/<athlete_id>/custom-item")
     resp = session.get(custom_item_url, timeout=20)
     resp.raise_for_status()
     items: list[dict[str, Any]] = resp.json()
     print(f"      -> {len(items)} custom items récupérés.")
 
-    input_fields = [item for item in items if item.get("type") == "INPUT_FIELD"]
-    print(f"      -> {len(input_fields)} items de type INPUT_FIELD trouvés.")
-
-    template_item: dict[str, Any] | None = input_fields[0] if input_fields else None
-    if template_item is not None:
-        print("\n=== Structure JSON exacte d'un INPUT_FIELD existant ===")
-        print(json.dumps(template_item, indent=2, ensure_ascii=False))
-
-    existing_by_code: dict[str, dict[str, Any]] = {}
+    deleted_ids: set[Any] = set()
+    print("\n[2/5] Suppression des items vespéraux existants / IDs 1330713..1330723...")
     for item in items:
-        c = extract_code(item)
-        if c:
-            existing_by_code[c] = item
+        if is_target_for_deletion(item):
+            item_id = item.get("id")
+            item_type = item.get("type")
+            item_code = extract_code(item)
+            del_resp = session.delete(f"{custom_item_url}/{item_id}", timeout=20)
+            del_resp.raise_for_status()
+            deleted_ids.add(item_id)
+            print(f"  [SUPPRIMÉ] id={item_id} | type={item_type!r} | code={item_code!r}")
+    if not deleted_ids:
+        print("      -> Aucun item à supprimer.")
 
-    print("\n[2/4] Provisionnement idempotent des 11 champs Wellness (INPUT_FIELD)...")
+    print("\n[3/5] Recherche de l'item modèle ('Handgrip Gauche' ou 'PVT Médian')...")
+    template_item = find_template_item(items, deleted_ids)
+    print("=== Structure JSON exacte de l'item modèle (athlete_id masqué) ===")
+    print(json.dumps(redact_item(template_item), indent=2, ensure_ascii=False))
+
+    print("\n[4/5] Clonage et création des 11 champs Wellness...")
     created_count = 0
-    updated_count = 0
-    existing_count = 0
-
     for spec in EVENING_FIELDS:
-        code = spec["code"]
         payload = build_payload(spec, template_item)
-        if code in existing_by_code:
-            existing_item = existing_by_code[code]
-            item_id = existing_item.get("id")
-            cur_content = existing_item.get("content") or {}
-            if cur_content.get("suffix") != spec["units"] or cur_content.get("units") != spec["units"]:
-                put_item_url = f"{custom_item_url}/{item_id}"
-                up_resp = session.put(put_item_url, json=payload, timeout=20)
-                up_resp.raise_for_status()
-                print(f"  [MIS À JOUR] {code:18s} (id={item_id}, name={spec['name']!r}, units={spec['units']!r})")
-                updated_count += 1
-            else:
-                print(f"  [OK - EXISTANT] {code:18s} (id={item_id}, name={spec['name']!r}, units={cur_content.get('units')!r})")
-                existing_count += 1
-            continue
-
         post_resp = session.post(custom_item_url, json=payload, timeout=20)
         post_resp.raise_for_status()
         created_item = post_resp.json()
-        c_content = created_item.get("content") or {}
-        print(f"  [CRÉÉ]          {code:18s} (id={created_item.get('id')}, name={created_item.get('name')!r}, units={c_content.get('units')!r})")
+        print(
+            f"  [CRÉÉ] id={created_item.get('id')} | code={extract_code(created_item)!r} "
+            f"| type={created_item.get('type')!r} | unit={extract_units(created_item)!r}"
+        )
         created_count += 1
+    print(f"      -> {created_count} champs créés.")
 
-    print(f"      -> Bilan: {created_count} créés, {updated_count} mis à jour, {existing_count} déjà conformes.")
-
-    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-    wellness_url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/wellness/{yesterday}"
-    print(f"\n[3/4] Test PUT sur {wellness_url}")
+    today_str = datetime.date.today().isoformat()
+    wellness_url = f"https://intervals.icu/api/v1/athlete/{athlete_id}/wellness/{today_str}"
+    print(f"\n[5/5] Test PUT puis GET sur wellness/{today_str}")
 
     get_before = session.get(wellness_url, timeout=20)
     before_data: dict[str, Any] = get_before.json() if get_before.status_code == 200 else {}
+    before_custom = before_data.get("custom") if isinstance(before_data.get("custom"), dict) else {}
 
     put_payload: dict[str, Any] = {}
     for code, default_val in TEST_VALUES.items():
         existing_val = before_data.get(code)
+        if existing_val is None:
+            existing_val = before_custom.get(code)
         put_payload[code] = existing_val if existing_val is not None else default_val
 
     put_resp = session.put(wellness_url, json=put_payload, timeout=20)
     print(f"      -> PUT status: {put_resp.status_code}")
     put_resp.raise_for_status()
 
-    print(f"\n[4/4] Vérification GET sur {wellness_url}")
     get_after = session.get(wellness_url, timeout=20)
+    print(f"      -> GET status: {get_after.status_code}")
     get_after.raise_for_status()
     after_data: dict[str, Any] = get_after.json()
+    after_custom = after_data.get("custom") if isinstance(after_data.get("custom"), dict) else {}
 
     all_ok = True
-    print(f"=== Valeurs relues sur {yesterday} ===")
+    print(f"=== Valeurs relues sur {today_str} ===")
     for spec in EVENING_FIELDS:
         code = spec["code"]
         expected = put_payload[code]
-        actual = after_data.get(code)
+        actual_root = after_data.get(code)
+        actual_custom = after_custom.get(code)
+        actual = actual_root if actual_root is not None else actual_custom
+        source = "root" if actual_root is not None else ("custom" if actual_custom is not None else "missing")
         match = actual is not None and float(actual) == float(expected)
-        status_str = "OK" if match else "MISMATCH"
+        status_str = f"OK:{source}" if match else f"MISMATCH:{source}"
         if not match:
             all_ok = False
         print(f"  - {code:18s} : attendu={expected!r:6} | relu={actual!r:6} [{status_str}]")

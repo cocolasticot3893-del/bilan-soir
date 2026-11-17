@@ -18,6 +18,8 @@
     input[type="date"], input[type="text"], input[type="password"] { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:0.85rem; }
     .btn-mini { background:var(--card); color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:0.78rem; font-weight:600; cursor:pointer; }
     .btn-mini.active { color:var(--text); border-color:var(--work); }
+    #btnToggleCfg.sync-ok { border-color:var(--sport); color:var(--sport); background:rgba(16,185,129,0.12); }
+    #btnToggleCfg.sync-missing { border-color:var(--danger); color:var(--danger); background:rgba(239,68,68,0.12); }
     .section { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; margin-bottom:14px; }
     .section-title { font-size:0.76rem; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; }
     .dot-wrap { display:flex; align-items:center; gap:6px; }
@@ -62,7 +64,10 @@
   <div id="cfgPanel" class="section">
     <div class="item-header">
       <span class="item-label">Sync Intervals.icu (Optionnel)</span>
-      <button type="button" class="btn-mini active" id="btnSaveCfg">Enregistrer</button>
+      <div style="display:flex; gap:6px;">
+        <button type="button" class="btn-mini" id="btnTestIcu">Tester la connexion ICU</button>
+        <button type="button" class="btn-mini active" id="btnSaveCfg">Enregistrer</button>
+      </div>
     </div>
     <div class="cfg-grid">
       <input type="text" id="icuAthleteId" placeholder="ID Athlète Intervals.icu (ex: i123456)" />
@@ -178,19 +183,83 @@
     logDateInput.value = formatLocalDate(0);
     document.getElementById('btnYesterday').addEventListener('click', () => { logDateInput.value = formatLocalDate(-1); loadEntryForDate(logDateInput.value); });
     logDateInput.addEventListener('change', () => loadEntryForDate(logDateInput.value));
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const urlAthlete = (searchParams.get('athlete') || hashParams.get('athlete') || '').trim();
+    const urlKey = (searchParams.get('key') || hashParams.get('key') || '').trim();
+    if (urlAthlete && urlKey) {
+      localStorage.setItem('icu_athlete_id', urlAthlete);
+      localStorage.setItem('icu_api_key', urlKey);
+    }
+    if (searchParams.has('athlete') || searchParams.has('key') || hashParams.has('athlete') || hashParams.has('key')) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
     const icuAthleteId = document.getElementById('icuAthleteId');
     const icuApiKey = document.getElementById('icuApiKey');
     icuAthleteId.value = localStorage.getItem('icu_athlete_id') || '';
     icuApiKey.value = localStorage.getItem('icu_api_key') || '';
+    function updateSyncIndicator() {
+      const btn = document.getElementById('btnToggleCfg');
+      const aid = (localStorage.getItem('icu_athlete_id') || '').trim();
+      const key = (localStorage.getItem('icu_api_key') || '').trim();
+      if (aid && key) {
+        btn.textContent = 'Sync · OK';
+        btn.classList.add('sync-ok');
+        btn.classList.remove('sync-missing');
+      } else {
+        btn.textContent = 'Sync · Config';
+        btn.classList.add('sync-missing');
+        btn.classList.remove('sync-ok');
+      }
+    }
+    updateSyncIndicator();
     document.getElementById('btnToggleCfg').addEventListener('click', () => {
       const p = document.getElementById('cfgPanel');
-      p.style.display = p.style.display === 'none' ? 'block' : 'none';
+      p.style.display = getComputedStyle(p).display === 'none' ? 'block' : 'none';
     });
     document.getElementById('btnSaveCfg').addEventListener('click', () => {
       localStorage.setItem('icu_athlete_id', icuAthleteId.value.trim());
       localStorage.setItem('icu_api_key', icuApiKey.value.trim());
+      updateSyncIndicator();
       document.getElementById('cfgPanel').style.display = 'none';
       showToast('Paramètres Intervals.icu sauvegardés', '#10b981');
+    });
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    async function readIcuError(res) {
+      const errText = await res.text().catch(() => '');
+      return `HTTP ${res.status} : ${errText.slice(0, 120) || res.statusText}`;
+    }
+    document.getElementById('btnTestIcu').addEventListener('click', async () => {
+      const inputAid = icuAthleteId.value.trim();
+      const inputKey = icuApiKey.value.trim();
+      if (inputAid && inputKey) {
+        localStorage.setItem('icu_athlete_id', inputAid);
+        localStorage.setItem('icu_api_key', inputKey);
+        updateSyncIndicator();
+      }
+      const aid = (localStorage.getItem('icu_athlete_id') || '').trim();
+      const key = (localStorage.getItem('icu_api_key') || '').trim();
+      if (!aid || !key) {
+        showToast('Identifiants ICU manquants', '#ef4444');
+        return;
+      }
+      const testDate = (logDateInput.value || '').trim();
+      if (!ISO_DATE_RE.test(testDate)) {
+        showToast('Date invalide (format AAAA-MM-JJ requis)', '#ef4444');
+        return;
+      }
+      try {
+        const res = await fetch(`https://intervals.icu/api/v1/athlete/${encodeURIComponent(aid)}/wellness/${testDate}`, {
+          headers: { 'Authorization': 'Basic ' + btoa(`API_KEY:${key}`), 'Accept': 'application/json' }
+        });
+        if (res.ok) {
+          showToast(`Connexion ICU OK (HTTP ${res.status})`, '#10b981');
+        } else {
+          showToast(`Erreur ICU ${await readIcuError(res)}`, '#ef4444');
+        }
+      } catch (err) {
+        showToast(`Erreur réseau ICU : ${err.message || err}`, '#ef4444');
+      }
     });
     const sliders = ['sport_srpe','sport_muscular_stress','sport_physical_cap','work_cognitive_hours','work_mental_demand','work_frustration_tilt','other_overall_stress','other_emotional_balance'];
     function updateCognitiveSummary() {
@@ -262,15 +331,43 @@
     }
     function renderHistory() {
       const map = getRecordsMap();
-      const rows = Object.values(map).sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7);
+      const rows = Object.values(map).sort((a,b) => String(b.date || '').localeCompare(String(a.date || ''))).slice(0, 7);
       const tbody = document.getElementById('historyBody');
-      if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7">Aucune donnée enregistrée</td></tr>'; return; }
-      tbody.innerHTML = rows.map((r) => `<tr><td>${r.date.slice(5)}</td><td>${r.sport_srpe}</td><td>${r.sport_muscular_stress}</td><td>${r.sport_physical_cap}</td><td>${r.work_cognitive_hours}</td><td>${r.work_frustration_tilt}</td><td>${r.other_fueling_recovery}</td></tr>`).join('');
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 7;
+        td.textContent = 'Aucune donnée enregistrée';
+        tr.appendChild(td);
+        tbody.replaceChildren(tr);
+        return;
+      }
+      const trs = rows.map((r) => {
+        const tr = document.createElement('tr');
+        [
+          String(r.date || '').slice(5),
+          r.sport_srpe,
+          r.sport_muscular_stress,
+          r.sport_physical_cap,
+          r.work_cognitive_hours,
+          r.work_frustration_tilt,
+          r.other_fueling_recovery
+        ].forEach((val) => {
+          const td = document.createElement('td');
+          td.textContent = val ?? '';
+          tr.appendChild(td);
+        });
+        return tr;
+      });
+      tbody.replaceChildren(...trs);
     }
     async function syncIntervalsIcu(entry) {
-      const aid = localStorage.getItem('icu_athlete_id');
-      const key = localStorage.getItem('icu_api_key');
+      const aid = (localStorage.getItem('icu_athlete_id') || '').trim();
+      const key = (localStorage.getItem('icu_api_key') || '').trim();
       if (!aid || !key) return false;
+      if (!ISO_DATE_RE.test(String(entry.date || ''))) {
+        throw new Error('Date invalide (format AAAA-MM-JJ requis)');
+      }
       const soreness = Math.max(1, Math.min(4, Math.ceil((entry.sport_muscular_stress + 1) / 1.75)));
       const stress = Math.max(1, Math.min(4, Math.ceil((entry.other_overall_stress + 1) / 1.75)));
       const fatigue = Math.max(1, Math.min(4, Math.ceil((7 - entry.sport_physical_cap) / 1.75)));
@@ -289,20 +386,22 @@
         SleepHygiene: entry.other_sleep_hygiene,
         comments: `sRPE:${entry.sport_srpe} | Cap:${entry.sport_physical_cap}/6 | Cog:${entry.work_cognitive_hours}h(D:${entry.work_mental_demand},Tilt:${entry.work_frustration_tilt}) | Fuel:${entry.other_fueling_recovery}/3 | Sleep:[${entry.sleep_hygiene_tags.join(',')}]`
       };
-      const res = await fetch(`https://intervals.icu/api/v1/athlete/${aid}/wellness/${entry.date}`, {
+      const res = await fetch(`https://intervals.icu/api/v1/athlete/${encodeURIComponent(aid)}/wellness/${entry.date}`, {
         method: 'PUT',
         headers: { 'Authorization': 'Basic ' + btoa(`API_KEY:${key}`), 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!res.ok) throw new Error(`ICU HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await readIcuError(res));
       return true;
     }
+    let toastTimer = null;
     function showToast(msg, color = '#10b981') {
       const t = document.getElementById('toast');
       t.textContent = msg; t.style.background = color;
       t.style.color = color === '#ef4444' ? '#fff' : '#04130d';
       t.style.display = 'block';
-      setTimeout(() => { t.style.display = 'none'; }, 3000);
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.style.display = 'none'; }, color === '#ef4444' ? 5000 : 3000);
     }
     document.getElementById('btnSubmit').addEventListener('click', async () => {
       const tagsArr = Array.from(sleepTags);
@@ -325,9 +424,13 @@
       renderHistory();
       try {
         const synced = await syncIntervalsIcu(entry);
-        showToast(synced ? `Sauvegardé + Sync Intervals.icu (${entry.date})` : `Sauvegardé sur Pixel (${entry.date})`, '#10b981');
-      } catch {
-        showToast(`Sauvegardé en local (Sync ICU hors ligne)`, '#f59e0b');
+        if (synced) {
+          showToast(`Sauvegardé + Sync Intervals.icu (${entry.date})`, '#10b981');
+        } else {
+          showToast('Sauvegardé en local (Sync ICU non configuré)', '#f59e0b');
+        }
+      } catch (err) {
+        showToast(`Erreur Sync ICU (${err.message || err})`, '#ef4444');
       }
     });
     document.getElementById('btnCopyJson').addEventListener('click', async () => {
