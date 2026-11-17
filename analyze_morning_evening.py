@@ -209,12 +209,14 @@ def main() -> int:
         )
     )
 
-    print("[3/4] Calcul des métriques glissantes 28j (HRV / RHR Z-Score) et ratio sRPE/TSS...")
+    print("[3/4] Calcul des métriques glissantes 28j (HRV / RHR / CogLoad Z-Score) et ratio sRPE/TSS...")
     df = df.with_columns(
         _rolling_mean(pl.col("hrv"), 28, 3).alias("hrv_mean_28d"),
         _rolling_std(pl.col("hrv"), 28, 3).alias("hrv_std_28d"),
         _rolling_mean(pl.col("restingHR"), 28, 3).alias("rhr_mean_28d"),
         _rolling_std(pl.col("restingHR"), 28, 3).alias("rhr_std_28d"),
+        _rolling_mean(pl.col("CogLoadUA"), 28, 2).alias("cog_load_mean_28d"),
+        _rolling_std(pl.col("CogLoadUA"), 28, 2).alias("cog_load_std_28d"),
         pl.when((pl.col("daily_tss") > 0) & pl.col("EveningSrpe").is_not_null())
         .then(pl.col("EveningSrpe") / (pl.col("daily_tss") / 100.0))
         .otherwise(None)
@@ -232,6 +234,10 @@ def main() -> int:
         .then((pl.col("restingHR") - pl.col("rhr_mean_28d")) / pl.col("rhr_std_28d"))
         .otherwise(None)
         .alias("rhr_z_score_28d"),
+        pl.when((pl.col("cog_load_std_28d") > 0) & pl.col("CogLoadUA").is_not_null())
+        .then((pl.col("CogLoadUA") - pl.col("cog_load_mean_28d")) / pl.col("cog_load_std_28d"))
+        .otherwise(None)
+        .alias("cog_load_z_score_28d"),
     )
 
     print(f"[4/4] Enregistrement dans DuckDB : {DUCKDB_PATH} (table: daily_telemetry)...")
@@ -260,6 +266,7 @@ def main() -> int:
         "hrv_mean_28d",
         "hrv_z_score_28d",
         "restingHR",
+        "rhr_z_score_28d",
         "sleep_hours",
         "daily_tss",
         "activity_count",
@@ -268,6 +275,7 @@ def main() -> int:
         "MuscularStress",
         "PhysicalCap",
         "CogLoadUA",
+        "cog_load_z_score_28d",
         "OverallStress",
     ]
     print("\n--- Aperçu des 10 derniers jours ---")
@@ -279,6 +287,7 @@ def main() -> int:
                 pl.col("hrv_mean_28d").round(1),
                 pl.col("hrv_z_score_28d").round(2),
                 pl.col("restingHR").round(1),
+                pl.col("rhr_z_score_28d").round(2),
                 pl.col("sleep_hours"),
                 pl.col("daily_tss").round(1),
                 pl.col("activity_count"),
@@ -286,6 +295,7 @@ def main() -> int:
                 pl.col("srpe_tss_ratio").round(2),
                 pl.col("PhysicalCap"),
                 pl.col("CogLoadUA"),
+                pl.col("cog_load_z_score_28d").round(2),
             ]
         )
     )
@@ -306,7 +316,13 @@ def main() -> int:
     print(stats)
 
     evening_rows = df.filter(pl.col("EveningSrpe").is_not_null()).select(
-        ["date", "daily_tss", "srpe_tss_ratio", *EVENING_CODES]
+        [
+            "date",
+            "daily_tss",
+            "srpe_tss_ratio",
+            *EVENING_CODES,
+            pl.col("cog_load_z_score_28d").round(2),
+        ]
     )
     print("\n--- Journées avec champs vespéraux renseignés ---")
     print(evening_rows)
