@@ -276,6 +276,17 @@
       const fatigue = Math.max(1, Math.min(4, Math.ceil((7 - entry.sport_physical_cap) / 1.75)));
       const body = {
         soreness, stress, fatigue,
+        EveningSrpe: entry.sport_srpe,
+        MuscularStress: entry.sport_muscular_stress,
+        PhysicalCap: entry.sport_physical_cap,
+        CogHours: entry.work_cognitive_hours,
+        MentalDemand: entry.work_mental_demand,
+        CogLoadUA: Math.round(entry.work_cognitive_hours * entry.work_mental_demand * 10) / 10,
+        FrustrationTilt: entry.work_frustration_tilt,
+        OverallStress: entry.other_overall_stress,
+        EmotionalBalance: entry.other_emotional_balance,
+        FuelingRecov: entry.other_fueling_recovery,
+        SleepHygiene: entry.other_sleep_hygiene,
         comments: `sRPE:${entry.sport_srpe} | Cap:${entry.sport_physical_cap}/6 | Cog:${entry.work_cognitive_hours}h(D:${entry.work_mental_demand},Tilt:${entry.work_frustration_tilt}) | Fuel:${entry.other_fueling_recovery}/3 | Sleep:[${entry.sleep_hygiene_tags.join(',')}]`
       };
       const res = await fetch(`https://intervals.icu/api/v1/athlete/${aid}/wellness/${entry.date}`, {
